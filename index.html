@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TrendVision Analytics — Demo</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background:#f8fafc; color:#0f172a; }
+    .brand { font-weight:700; letter-spacing:0.2px; }
+    .card { box-shadow: 0 6px 18px rgba(15,23,42,0.06); }
+    .controls { gap:8px; flex-wrap:wrap; }
+    #chart { min-height:420px; }
+    .small-muted { font-size:0.85rem; color:#6b7280; }
+  </style>
+</head>
+<body>
+  <nav class="navbar bg-white mb-4">
+    <div class="container">
+      <div class="navbar-brand brand">📊 TrendVision Analytics — Demo aziendale</div>
+      <div class="text-muted small">Portfolio project — Marketing Intelligence (static demo)</div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="row g-3">
+      <div class="col-md-4">
+        <div class="card p-3">
+          <h5>Impostazioni</h5>
+          <p class="small-muted">Scegli le keyword da visualizzare</p>
+          <div id="keywords" class="d-flex controls mb-2"></div>
+          <div class="mb-2">
+            <label>Periodo</label>
+            <select id="period" class="form-select form-select-sm">
+              <option value="all">Tutto</option>
+            </select>
+          </div>
+          <div id="kpis" class="mt-3"></div>
+          <a id="downloadLink" class="btn btn-outline-primary btn-sm mt-3" href="data/trends.csv" download>⬇️ Scarica CSV</a>
+        </div>
+
+        <div class="card p-3 mt-3">
+          <h6>Use case (simulato)</h6>
+          <p class="small-muted">Esempio: se il picco di ricerca per <b>scarpe_running</b> avviene a maggio, allocare budget ADV a partire da aprile per massimizzare conversioni.</p>
+        </div>
+      </div>
+
+      <div class="col-md-8">
+        <div class="card p-3">
+          <div id="chart"></div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="mt-4 text-center text-muted small">Demo per portfolio — dati fittizi</footer>
+  </div>
+
+  <!-- Librerie -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+
+  <script>
+    const CSV_PATH = 'data/trends.csv';
+
+    function safeParseFloat(v){ return v==="" ? null : Number(v); }
+
+    function buildUI(columns) {
+      const keywordsDiv = document.getElementById('keywords');
+      keywordsDiv.innerHTML = '';
+      columns.filter(c=>c!=='Date').forEach((k, idx)=>{
+        const id = 'kw_' + idx;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'form-check me-2';
+        wrapper.innerHTML = `<input class="form-check-input" type="checkbox" value="${k}" id="${id}" ${idx<2?'checked':''}><label class="form-check-label" for="${id}">${k}</label>`;
+        keywordsDiv.appendChild(wrapper);
+      });
+    }
+
+    function renderKPIs(data, selected) {
+      const container = document.getElementById('kpis');
+      container.innerHTML = '';
+      selected.slice(0,3).forEach(k=>{
+        const vals = data.map(r=>safeParseFloat(r[k]));
+        const last = vals[vals.length-1];
+        let peakVal = Math.max(...vals.filter(v=>v!==null));
+        let peakIndex = vals.indexOf(peakVal);
+        let peakDate = data[peakIndex].Date;
+        const el = document.createElement('div');
+        el.className = 'mb-2';
+        el.innerHTML = `<div class="fw-semibold">${k}</div><div class="small-muted">Ultimo: ${last} — Picco ${peakVal} (${peakDate})</div>`;
+        container.appendChild(el);
+      });
+    }
+
+    function plotData(data, selected) {
+      const clean = data.filter(r => r.Date && selected.some(k=>r[k]!=="" && r[k] !== undefined));
+      const x = clean.map(r=>r.Date);
+      const traces = selected.map(k => ({
+        x: x,
+        y: clean.map(r => safeParseFloat(r[k])),
+        mode: 'lines+markers',
+        name: k,
+        connectgaps: false
+      }));
+      const layout = {
+        margin:{t:40,l:50,r:30,b:50},
+        legend:{orientation:'h',y:-0.15},
+        xaxis:{title:'Date'},
+        yaxis:{title:'Interest (relative)'}
+      };
+      Plotly.newPlot('chart', traces, layout, {responsive:true});
+    }
+
+    // load CSV and init UI
+    fetch(CSV_PATH).then(r=>r.text()).then(txt=>{
+      const parsed = Papa.parse(txt, {header:true, skipEmptyLines:true});
+      const data = parsed.data;
+      if(!data || data.length===0){ document.getElementById('chart').innerHTML = '<div class="text-danger">Nessun dato CSV trovato.</div>'; return; }
+      const cols = Object.keys(data[0]);
+      buildUI(cols);
+      const defaultSelected = Array.from(document.querySelectorAll('#keywords input:checked')).map(i=>i.value);
+      renderKPIs(data, defaultSelected);
+      plotData(data, defaultSelected);
+
+      document.getElementById('keywords').addEventListener('change', ()=>{
+        const selected = Array.from(document.querySelectorAll('#keywords input:checked')).map(i=>i.value);
+        renderKPIs(data, selected);
+        plotData(data, selected);
+      });
+    }).catch(err=>{
+      document.getElementById('chart').innerHTML = '<div class="text-danger">Errore nel caricare i dati CSV.</div>';
+    });
+  </script>
+</body>
+</html>
