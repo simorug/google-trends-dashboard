@@ -1,120 +1,171 @@
-import streamlit as st
+import os
+import io
 import pandas as pd
+import streamlit as st
 import plotly.express as px
-from pathlib import Path
 
-# ==== Config app (branding leggero) ====
+# Configurazione pagina
 st.set_page_config(page_title="TrendVision Analytics", page_icon="📊", layout="wide")
+
 st.title("📊 TrendVision Analytics")
-st.caption("Dashboard demo per portfolio — analisi trend da CSV (Google Trends esportato)")
+st.caption("Dashboard portfolio — analisi interesse nel tempo (Google Trends).")
 
-DATA_PATH = Path("data/trend.csv")
-
-@st.cache_data(ttl=600)
-def load_csv(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Non trovo {path}. Carica un CSV in data/trend.csv.")
-    df = pd.read_csv(path)
-    # Normalizza possibili nomi di colonna
-    cols = {c.lower().strip(): c for c in df.columns}
-    # Prova a individuare la colonna data
-    date_col_guess = None
-    for candidate in ["date", "data", "time", "timestamp", "giorno"]:
-        if candidate in cols:
-            date_col_guess = cols[candidate]; break
-    if date_col_guess is None:
-        # Se il primo campo sembra una data, usalo
+# ----------------------------
+# Utility: lettura robusta CSV
+# ----------------------------
+def load_trends_csv(file_like_or_path: str | io.BytesIO) -> pd.DataFrame:
+    """
+    Legge CSV di Google Trends anche se contiene righe iniziali tipo 'Categoria: ...'
+    e variazioni di intestazione ('Tempo', 'Giorno', 'Date', 'Week').
+    Restituisce un DataFrame con colonna 'Date' + colonne numeriche.
+    """
+    # Carica bytes (sia da path che da UploadedFile)
+    if isinstance(file_like_or_path, (str, os.PathLike)):
+        with open(file_like_or_path, "rb") as f:
+            raw_bytes = f.read()
+    else:
+        raw_bytes = file_like_or_path.read()
         try:
-            pd.to_datetime(df.iloc[:,0])
-            date_col_guess = df.columns[0]
-        except Exception as _:
+            file_like_or_path.seek(0)  # ripristina il puntatore se è un UploadedFile
+        except Exception:
             pass
-    # Riconosci formato "long" (date, keyword, value)
-    long_candidates = {"keyword","term","query","chiave","categoria"}
-    value_candidates = {"value","score","interest","valore","ricerche"}
-    is_long = any(c in cols for c in long_candidates) and any(v in cols for v in value_candidates)
 
-    if is_long:
-        key_col = cols[[c for c in long_candidates if c in cols][0]]
-        val_col = cols[[v for v in value_candidates if v in cols][0]]
-        if date_col_guess is None:
-            date_col_guess = df.columns[0]
-        df[date_col_guess] = pd.to_datetime(df[date_col_guess], errors="coerce")
-        df = df.dropna(subset=[date_col_guess])
-        # pivot a “wide” per grafico multi-serie
-        wide = df.pivot_table(index=date_col_guess, columns=key_col, values=val_col, aggfunc="mean").reset_index()
-    else:
-        # Formato "wide": prima colonna date, le altre serie
-        if date_col_guess is None:
-            date_col_guess = df.columns[0]
-        df[date_col_guess] = pd.to_datetime(df[date_col_guess], errors="coerce")
-        df = df.dropna(subset=[date_col_guess])
-        wide = df.rename(columns={date_col_guess: "Date"}).copy()
-        if "Date" not in wide.columns:
-            wide = wide.rename(columns={date_col_guess: "Date"})
-    # Assicura che la colonna data si chiami "Date"
-    if "Date" not in wide.columns:
-        wide = wide.rename(columns={date_col_guess: "Date"})
-    # Tieni solo numeriche + Date
-    keep = ["Date"] + [c for c in wide.columns if c != "Date" and pd.api.types.is_numeric_dtype(wide[c])]
-    wide = wide[keep].sort_values("Date")
-    return wide
+    text = raw_bytes.decode("utf-8", errors="ignore")
+    lines = text.splitlines()
 
-def moving_average(df: pd.DataFrame, cols: list[str], window: int) -> pd.DataFrame:
-    if window <= 1: 
-        return df
-    out = df.copy()
-    for c in cols:
-        out[c] = out[c].rolling(window=window, min_periods=1, center=False).mean()
-    return out
+    # Trova la riga header (prima riga con una delle parole chiave + virgola)
+    header_idx = 0
+    for i, line in enumerate(lines[:50]):  # controlla prime 50 righe
+        low = line.lower()
+        if "," in line and any(k in low for k in ["tempo", "giorno", "date", "week"]):
+            header_idx = i
+            break
 
-# ==== Sidebar ====
-with st.sidebar:
-    st.header("Impostazioni")
-    st.write("Il CSV deve essere in `data/trend.csv` nella repo.")
-    smooth = st.selectbox("Smoothing (media mobile)", [1, 3, 7, 14], index=2)
-    date_range = st.date_input("Intervallo date (opzionale)", value=[], help="Lascia vuoto per tutte le date")
+    csv_text = "\n".join(lines[header_idx:])
+    df = pd.read_csv(io.StringIO(csv_text))
 
-# ==== Body ====
-try:
-    wide = load_csv(DATA_PATH)
-    all_series = [c for c in wide.columns if c != "Date"]
-    if not all_series:
-        st.warning("Nessuna serie numerica trovata nel CSV. Verifica il formato.")
-    else:
-        selected = st.multiselect("Seleziona le serie (keyword) da visualizzare", options=all_series, default=all_series[: min(3, len(all_series))])
-        if not selected:
-            st.info("Seleziona almeno una serie.")
+    # Rinomina la prima colonna in 'Date'
+    first_col = df.columns[0]
+    df = df.rename(columns={first_col: "Date"})
+
+    # Normalizza i nomi serie (rimuove eventuale suffisso ': (Tutto il mondo)' ecc.)
+    new_cols = []
+    for c in df.columns:
+        if c == "Date":
+            new_cols.append(c)
         else:
-            df = wide.copy()
-            # filtro date
-            if isinstance(date_range, list) and len(date_range) == 2:
-                start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
-                df = df[(df["Date"] >= start) & (df["Date"] <= end)]
-            # smoothing
-            df = moving_average(df, selected, smooth)
+            new_cols.append(c.split(":")[0].strip())
+    df.columns = new_cols
 
-            # Grafico
-            fig = px.line(df, x="Date", y=selected, markers=True, title="Andamento ricerche (CSV)")
-            st.plotly_chart(fig, use_container_width=True)
+    # Converte Date e pulisce
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"])
 
-            # KPI (ultimi valori e picchi)
-            kpi_cols = st.columns(min(4, len(selected)))
-            for i, k in enumerate(selected[:4]):
-                last = int(round(df[k].dropna().iloc[-1])) if df[k].notna().any() else 0
-                peak_val = int(round(df[k].max())) if df[k].notna().any() else 0
-                peak_date = df.loc[df[k].idxmax(), "Date"].date() if df[k].notna().any() else "-"
-                with kpi_cols[i]:
-                    st.metric(label=f"{k} — ultimo", value=last, delta=f"picco {peak_val} il {peak_date}")
+    # Converte tutte le altre colonne a numerico
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-            # Tabella + download
-            with st.expander("Vedi dati"):
-                st.dataframe(df[["Date"] + selected], use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Scarica CSV filtrato", df[["Date"] + selected].to_csv(index=False).encode("utf-8"),
-                               file_name="trends_filtered.csv", mime="text/csv")
+    # Tieni solo colonne numeriche
+    numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
+    if not numeric_cols:
+        return pd.DataFrame()
 
-            st.success("Caso d'uso: individua stagionalità e finestre di lancio/promozioni in base ai picchi di interesse.")
-except FileNotFoundError as e:
-    st.error(str(e))
-except Exception as e:
-    st.error(f"Errore in lettura/visualizzazione CSV: {e}")
+    return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
+
+# ----------------------------
+# Sorgente dati: repo o upload
+# ----------------------------
+st.sidebar.header("Dati")
+uploaded = st.sidebar.file_uploader("Carica CSV (Google Trends)", type=["csv"])
+use_repo = st.sidebar.checkbox("Usa dataset di default del repository (data/trend.csv)", value=True if uploaded is None else False)
+
+df = pd.DataFrame()
+origin = ""
+
+if uploaded is not None:
+    df = load_trends_csv(uploaded)
+    origin = "CSV caricato dall'utente"
+elif use_repo:
+    path = os.path.join(os.path.dirname(__file__), "data", "trend.csv")
+    if os.path.exists(path):
+        df = load_trends_csv(path)
+        origin = "data/trend.csv (repo)"
+    else:
+        origin = "Nessun file trovato"
+
+# Messaggi di stato
+if df.empty:
+    st.warning("Nessuna serie numerica trovata nel CSV. Verifica il formato (prima colonna = data, almeno una serie numerica).")
+    st.stop()
+
+st.success(f"Dati caricati da: **{origin}**")
+
+# ----------------------------
+# Filtri e opzioni
+# ----------------------------
+numeric_cols = df.columns[1:].tolist()
+default_selection = numeric_cols[:1] if numeric_cols else []
+selected_cols = st.multiselect("Seleziona serie da visualizzare", options=numeric_cols, default=default_selection)
+
+if not selected_cols:
+    st.info("Seleziona almeno una serie per procedere.")
+    st.stop()
+
+# Filtro date
+min_date, max_date = df["Date"].min().date(), df["Date"].max().date()
+date_range = st.date_input(
+    "Intervallo temporale",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date
+)
+
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+    mask = (df["Date"] >= start) & (df["Date"] <= end + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+    df = df.loc[mask].copy()
+
+# Smoothing
+smoothing = st.selectbox("Smoothing (media mobile)", options=[1, 3, 7, 14], index=0)
+plot_df = df.copy()
+if smoothing > 1:
+    for c in selected_cols:
+        plot_df[c] = plot_df[c].rolling(window=smoothing, min_periods=1).mean()
+
+# ----------------------------
+# Grafico
+# ----------------------------
+fig = px.line(
+    plot_df,
+    x="Date",
+    y=selected_cols,
+    markers=True,
+    title="Andamento interesse nel tempo"
+)
+fig.update_layout(legend_title_text="Serie")
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ----------------------------
+# KPI rapidi (max 3 serie)
+# ----------------------------
+st.subheader("KPI rapidi")
+kpi_cols = st.columns(min(3, len(selected_cols)))
+for i, col in enumerate(selected_cols[:3]):
+    last_val = int(plot_df[col].iloc[-1]) if not plot_df.empty else 0
+    peak_val = int(plot_df[col].max()) if not plot_df.empty else 0
+    peak_date = plot_df.loc[plot_df[col].idxmax(), "Date"].date() if not plot_df.empty else "-"
+    with kpi_cols[i]:
+        st.metric(label=f"{col} — ultimo valore", value=last_val, delta=f"picco {peak_val} il {peak_date}")
+
+# ----------------------------
+# Download dati filtrati
+# ----------------------------
+st.download_button(
+    "⬇️ Scarica CSV (dati filtrati)",
+    data=plot_df[["Date"] + selected_cols].to_csv(index=False).encode("utf-8"),
+    file_name="trends_filtrati.csv",
+    mime="text/csv"
+)
+
+st.caption("Suggerimento: carica CSV direttamente da Google Trends (grafico 'Interesse nel tempo').")
