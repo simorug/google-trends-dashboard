@@ -15,20 +15,102 @@ st.title("📊 Google Trends Dashboard")
 # Funzioni di supporto
 # =========================
 @st.cache_data
-def load_data(uploaded_files):
-    """Carica e concatena i file CSV di Google Trends."""
-    dfs = []
-    for uploaded_file in uploaded_files:
-        try:
-            df = pd.read_csv(uploaded_file)
-            df = clean_trends(df)
-            dfs.append(df)
-        except Exception as e:
-            st.error(f"Errore nel file {uploaded_file.name}: {e}")
-    if dfs:
-        return pd.concat(dfs, axis=0).reset_index(drop=True)
-    return pd.DataFrame()
+def load_trends_csv(file_like_or_path):
+    """
+    Legge CSV di Google Trends (multiTimeline.csv) anche se contiene righe iniziali
+    tipo 'Categoria: ...', 'Paese, ...', ecc. e intestazioni variabili ('Tempo',
+    'Giorno', 'Week', 'Date'). Restituisce un DataFrame con colonna 'Date' + serie numeriche.
+    """
+    import re
 
+    # 1) Carica i bytes (sia da path, sia da UploadedFile di Streamlit)
+    if isinstance(file_like_or_path, (str, os.PathLike)):
+        with open(file_like_or_path, "rb") as f:
+            raw_bytes = f.read()
+    else:
+        raw_bytes = file_like_or_path.read()
+        try:
+            file_like_or_path.seek(0)  # ripristina se è un UploadedFile
+        except Exception:
+            pass
+
+    # 2) Decodifica robusta (gestisce BOM e caratteri strani)
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+    except Exception:
+        text = raw_bytes.decode("utf-8", errors="ignore")
+
+    lines = text.splitlines()
+
+    # 3) Trova la riga di header (prima riga con separatore e una parola chiave tipica)
+    header_idx = 0
+    header_found = False
+    header_keys = ["tempo", "giorno", "settimana", "week", "date"]
+
+    for i, line in enumerate(lines[:100]):  # controlla prime 100 righe
+        low = line.lower()
+        if ("," in line or ";" in line or "\t" in line) and any(k in low for k in header_keys):
+            header_idx = i
+            header_found = True
+            break
+
+    # fallback: cerca la prima riga con una data tipo YYYY-MM-DD e un separatore
+    if not header_found:
+        date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
+        for i, line in enumerate(lines[:100]):
+            if date_re.search(line) and ("," in line or ";" in line or "\t" in line):
+                header_idx = max(0, i - 1)  # spesso l'header è la riga prima della prima data
+                header_found = True
+                break
+
+    csv_text = "\n".join(lines[header_idx:])
+
+    # 4) Leggi il CSV con auto-rilevamento del separatore
+    try:
+        df = pd.read_csv(io.StringIO(csv_text), sep=None, engine="python")
+    except Exception:
+        # fallback semplice
+        df = pd.read_csv(io.StringIO(csv_text))
+
+    if df.shape[1] == 0:
+        return pd.DataFrame()
+
+    # 5) Rinomina la prima colonna in 'Date'
+    first_col = df.columns[0]
+    df.rename(columns={first_col: "Date"}, inplace=True)
+
+    # 6) Pulisci i nomi delle serie (togli suffissi tipo ': (Italia)')
+    cleaned = []
+    for c in df.columns:
+        if c == "Date":
+            cleaned.append(c)
+            continue
+        base = c.split(":")[0].strip()  # es. "AI: (Italy)" -> "AI"
+        if base == "":
+            base = c.strip()
+        cleaned.append(base)
+    df.columns = cleaned
+
+    # 7) Elimina colonna isPartial se presente (case-insensitive)
+    drop_cols = [c for c in df.columns if c.strip().lower() == "ispartial"]
+    if drop_cols:
+        df.drop(columns=drop_cols, inplace=True)
+
+    # 8) Converti Date
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=False)
+    df = df.dropna(subset=["Date"])
+
+    # 9) Converti le altre colonne in numerico (coerce)
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # 10) Tieni solo le colonne numeriche
+    numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
+    if not numeric_cols:
+        return pd.DataFrame()
+
+    # 11) Ordina per data e ritorna
+    return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
 
 def clean_trends(df: pd.DataFrame) -> pd.DataFrame:
     """Normalizza il CSV Google Trends in formato corretto"""
