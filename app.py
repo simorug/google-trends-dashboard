@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from io import BytesIO
 import io
 import os
@@ -25,7 +26,6 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
     Restituisce un DataFrame con colonna 'Date' + serie numeriche.
     """
 
-    # --- 1) Carica i bytes
     if isinstance(file_like_or_path, (str, os.PathLike)):
         with open(file_like_or_path, "rb") as f:
             raw_bytes = f.read()
@@ -36,7 +36,6 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
         except Exception:
             pass
 
-    # --- 2) Decodifica robusta
     try:
         text = raw_bytes.decode("utf-8-sig")
     except Exception:
@@ -44,7 +43,6 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
 
     lines = text.splitlines()
 
-    # --- 3) Trova header
     header_idx = 0
     header_found = False
     header_keys = ["tempo", "giorno", "settimana", "week", "date", "month", "mese"]
@@ -56,7 +54,6 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
             header_found = True
             break
 
-    # fallback: cerca una riga con YYYY-MM-DD
     if not header_found:
         date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
         for i, line in enumerate(lines[:100]):
@@ -67,7 +64,6 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
 
     csv_text = "\n".join(lines[header_idx:])
 
-    # --- 4) Leggi CSV
     try:
         df = pd.read_csv(io.StringIO(csv_text), sep=None, engine="python")
     except Exception:
@@ -76,11 +72,9 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
     if df.shape[1] == 0:
         return pd.DataFrame()
 
-    # --- 5) Prima colonna → "Date"
     first_col = df.columns[0]
     df.rename(columns={first_col: "Date"}, inplace=True)
 
-    # --- 6) Pulisci nomi colonne (toglie es. ': (Italy)')
     cleaned = []
     for c in df.columns:
         if c == "Date":
@@ -92,22 +86,17 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
         cleaned.append(base)
     df.columns = cleaned
 
-    # --- 7) Drop colonna isPartial
     drop_cols = [c for c in df.columns if c.strip().lower() == "ispartial"]
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
 
-    # --- 8) Converte Date UNIFICANDO il fuso (evita mix tz-aware/naive)
-    #     Tutte le date diventano UTC e poi tz-naive -> nessun conflitto in sort/comparison
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None)
     df = df.dropna(subset=["Date"])
 
-    # --- 9) Converte altre colonne in numerico (ripulisce eventuali caratteri non numerici)
     for c in df.columns[1:]:
         s = df[c].astype(str).str.replace(r"[^\d\.\-]", "", regex=True)
         df[c] = pd.to_numeric(s, errors="coerce")
 
-    # --- 10) Tieni solo numeriche
     numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
     if not numeric_cols:
         return pd.DataFrame()
@@ -116,19 +105,33 @@ def load_trends_csv(file_like_or_path) -> pd.DataFrame:
 
 
 def download_chart(fig, fallback_df: pd.DataFrame | None = None):
-    """Tenta il download PNG (richiede kaleido). Se non disponibile, ritorna CSV."""
     try:
         import plotly.io as pio  # noqa
         buffer = BytesIO()
-        fig.write_image(buffer, format="png")  # usa kaleido se presente
+        fig.write_image(buffer, format="png")
         buffer.seek(0)
         return buffer, "image/png", "trends_chart.png"
     except Exception:
-        # fallback: offri il CSV dei dati visibili
         if fallback_df is None:
             fallback_df = pd.DataFrame()
         csv_bytes = fallback_df.to_csv(index=False).encode("utf-8")
         return BytesIO(csv_bytes), "text/csv", "trends_visible.csv"
+
+
+def generate_insights(df: pd.DataFrame, cols: list[str]) -> list[str]:
+    """Restituisce alcuni insight testuali di base"""
+    insights = []
+    for col in cols:
+        mean = df[col].mean()
+        last = df[col].iloc[-1]
+        first = df[col].iloc[0]
+        trend = ((last - first) / first * 100) if first != 0 else 0
+        max_val = df[col].max()
+        min_val = df[col].min()
+        insights.append(
+            f"🔎 **{col}**: media {mean:.1f}, max {max_val:.0f}, min {min_val:.0f}, trend {trend:+.1f}% dal primo all’ultimo punto."
+        )
+    return insights
 
 
 # =========================
@@ -145,13 +148,11 @@ if uploaded_files:
     for f in uploaded_files:
         df_tmp = load_trends_csv(f)
         if not df_tmp.empty:
-            # normalizza subito la colonna Date (uniforme, tz-naive in UTC)
             df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce", utc=True).dt.tz_localize(None)
             df_tmp = df_tmp.dropna(subset=["Date"])
             all_dfs.append(df_tmp)
 
     if all_dfs:
-        # concatena in sicurezza e ordina
         try:
             df = pd.concat(all_dfs, ignore_index=True)
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None)
@@ -163,11 +164,7 @@ if uploaded_files:
         st.subheader("✅ Dati caricati correttamente")
         st.dataframe(df.head(20))
 
-        # =========================
-        # Filtro periodo
-        # =========================
         min_date_ts, max_date_ts = df["Date"].min(), df["Date"].max()
-        # Streamlit preferisce oggetti date per il widget
         min_date, max_date = min_date_ts.date(), max_date_ts.date()
 
         start_date, end_date = st.date_input(
@@ -176,16 +173,12 @@ if uploaded_files:
             min_value=min_date,
             max_value=max_date
         )
-        # normalizza in Timestamp
         start_ts = pd.to_datetime(start_date)
         end_ts = pd.to_datetime(end_date)
 
         mask = (df["Date"] >= start_ts) & (df["Date"] <= end_ts)
         filtered_df = df.loc[mask].copy()
 
-        # =========================
-        # Resample
-        # =========================
         freq = st.selectbox("Raggruppa dati per", ["Nessuno", "Giorno", "Settimana", "Mese"])
         if freq == "Giorno":
             filtered_df = filtered_df.resample("D", on="Date").mean().reset_index()
@@ -194,49 +187,79 @@ if uploaded_files:
         elif freq == "Mese":
             filtered_df = filtered_df.resample("M", on="Date").mean().reset_index()
 
-        # =========================
-        # Statistiche
-        # =========================
         st.subheader("📈 Statistiche principali")
         numeric_cols = [c for c in filtered_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(filtered_df[c])]
         if numeric_cols:
             for col in numeric_cols:
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 c1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
                 c2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
                 c3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+                c4.metric(f"Ultimo", f"{filtered_df[col].iloc[-1]:.0f}")
         else:
             st.warning("Nessuna colonna numerica disponibile dopo il filtro.")
 
-        # =========================
-        # Grafico
-        # =========================
+        st.subheader("📊 Grafici")
+        chart_type = st.selectbox("Tipo di grafico", ["Linee", "Barre", "Area", "Scatter"])
         if numeric_cols:
-            fig = px.line(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends", markers=True)
+            if chart_type == "Linee":
+                fig = px.line(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends", markers=True)
+            elif chart_type == "Barre":
+                fig = px.bar(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends")
+            elif chart_type == "Area":
+                fig = px.area(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends")
+            else:
+                fig = px.scatter(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends")
+
             st.plotly_chart(fig, use_container_width=True)
         else:
             fig = None
 
-        # =========================
-        # Download
-        # =========================
+        if len(numeric_cols) >= 2:
+            st.subheader("📉 Confronto tra due keyword")
+            col1, col2 = st.columns(2)
+            k1 = col1.selectbox("Keyword 1", numeric_cols, index=0)
+            k2 = col2.selectbox("Keyword 2", numeric_cols, index=1)
+            fig_cmp = go.Figure()
+            fig_cmp.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df[k1], mode="lines", name=k1))
+            fig_cmp.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df[k2], mode="lines", name=k2))
+            st.plotly_chart(fig_cmp, use_container_width=True)
+
+        if len(numeric_cols) >= 2:
+            st.subheader("📌 Correlazioni")
+            corr = filtered_df[numeric_cols].corr()
+            fig_corr = px.imshow(corr, text_auto=True, title="Matrice di correlazione", aspect="auto", color_continuous_scale="RdBu_r")
+            st.plotly_chart(fig_corr, use_container_width=True)
+
+        st.subheader("📥 Download")
         if fig is not None:
             payload, mime, filename = download_chart(fig, fallback_df=filtered_df[["Date"] + numeric_cols])
             st.download_button(
-                label="📥 Scarica grafico in PNG (se disponibile) / altrimenti CSV",
+                label="Scarica grafico (PNG o CSV)",
                 data=payload,
                 file_name=filename,
                 mime=mime
             )
-            if mime != "image/png":
-                st.info("Per il download PNG serve il pacchetto `kaleido`. Aggiungilo in `requirements.txt`.")
-        else:
-            st.download_button(
-                label="⬇️ Scarica dati filtrati (CSV)",
-                data=filtered_df.to_csv(index=False).encode("utf-8"),
-                file_name="trends_filtrati.csv",
-                mime="text/csv"
-            )
+        st.download_button(
+            label="⬇️ Scarica dati filtrati (CSV)",
+            data=filtered_df.to_csv(index=False).encode("utf-8"),
+            file_name="trends_filtrati.csv",
+            mime="text/csv"
+        )
+        to_excel = BytesIO()
+        with pd.ExcelWriter(to_excel, engine="xlsxwriter") as writer:
+            filtered_df.to_excel(writer, sheet_name="Dati", index=False)
+        st.download_button(
+            label="⬇️ Scarica dati in Excel",
+            data=to_excel.getvalue(),
+            file_name="trends_filtrati.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.subheader("🧠 Insights automatici")
+        insights = generate_insights(filtered_df, numeric_cols)
+        for ins in insights:
+            st.markdown(ins)
     else:
         st.warning("⚠️ Nessun dato valido trovato nei file caricati.")
 else:
