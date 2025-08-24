@@ -132,11 +132,20 @@ if uploaded_files:
     for f in uploaded_files:
         df_tmp = load_trends_csv(f)
         if not df_tmp.empty:
+            # normalizza subito la colonna Date
+            df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce")
+            df_tmp = df_tmp.dropna(subset=["Date"])
             all_dfs.append(df_tmp)
 
     if all_dfs:
-        df = pd.concat(all_dfs, ignore_index=True).sort_values("Date")
-        df = df.reset_index(drop=True)
+        # concatena in sicurezza
+        try:
+            df = pd.concat(all_dfs, ignore_index=True)
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+        except Exception as e:
+            st.error(f"❌ Errore durante la concatenazione dei file: {e}")
+            st.stop()
 
         st.subheader("✅ Dati caricati correttamente")
         st.write(df.head())
