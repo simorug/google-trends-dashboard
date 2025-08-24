@@ -18,7 +18,7 @@ st.title("📊 Google Trends Dashboard")
 # Funzioni di supporto
 # =========================
 @st.cache_data
-def load_trends_csv(file_like_or_path):
+def load_trends_csv(file_like_or_path) -> pd.DataFrame:
     """
     Legge CSV di Google Trends (multiTimeline.csv) anche se contiene righe iniziali
     tipo 'Categoria: ...', 'Paese: ...', ecc. e intestazioni variabili.
@@ -47,7 +47,7 @@ def load_trends_csv(file_like_or_path):
     # --- 3) Trova header
     header_idx = 0
     header_found = False
-    header_keys = ["tempo", "giorno", "settimana", "week", "date"]
+    header_keys = ["tempo", "giorno", "settimana", "week", "date", "month", "mese"]
 
     for i, line in enumerate(lines[:100]):
         low = line.lower()
@@ -80,7 +80,7 @@ def load_trends_csv(file_like_or_path):
     first_col = df.columns[0]
     df.rename(columns={first_col: "Date"}, inplace=True)
 
-    # --- 6) Pulisci nomi colonne
+    # --- 6) Pulisci nomi colonne (toglie es. ': (Italy)')
     cleaned = []
     for c in df.columns:
         if c == "Date":
@@ -97,13 +97,15 @@ def load_trends_csv(file_like_or_path):
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
 
-    # --- 8) Converte Date
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=False)
+    # --- 8) Converte Date UNIFICANDO il fuso (evita mix tz-aware/naive)
+    #     Tutte le date diventano UTC e poi tz-naive -> nessun conflitto in sort/comparison
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None)
     df = df.dropna(subset=["Date"])
 
-    # --- 9) Converte altre colonne in numerico
+    # --- 9) Converte altre colonne in numerico (ripulisce eventuali caratteri non numerici)
     for c in df.columns[1:]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        s = df[c].astype(str).str.replace(r"[^\d\.\-]", "", regex=True)
+        df[c] = pd.to_numeric(s, errors="coerce")
 
     # --- 10) Tieni solo numeriche
     numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
@@ -113,10 +115,21 @@ def load_trends_csv(file_like_or_path):
     return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
 
 
-def download_chart(fig):
-    buffer = BytesIO()
-    fig.write_image(buffer, format="png")
-    return buffer
+def download_chart(fig, fallback_df: pd.DataFrame | None = None):
+    """Tenta il download PNG (richiede kaleido). Se non disponibile, ritorna CSV."""
+    try:
+        import plotly.io as pio  # noqa
+        buffer = BytesIO()
+        fig.write_image(buffer, format="png")  # usa kaleido se presente
+        buffer.seek(0)
+        return buffer, "image/png", "trends_chart.png"
+    except Exception:
+        # fallback: offri il CSV dei dati visibili
+        if fallback_df is None:
+            fallback_df = pd.DataFrame()
+        csv_bytes = fallback_df.to_csv(index=False).encode("utf-8")
+        return BytesIO(csv_bytes), "text/csv", "trends_visible.csv"
+
 
 # =========================
 # Upload file
@@ -132,39 +145,43 @@ if uploaded_files:
     for f in uploaded_files:
         df_tmp = load_trends_csv(f)
         if not df_tmp.empty:
-            # normalizza subito la colonna Date
-            df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce")
+            # normalizza subito la colonna Date (uniforme, tz-naive in UTC)
+            df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce", utc=True).dt.tz_localize(None)
             df_tmp = df_tmp.dropna(subset=["Date"])
             all_dfs.append(df_tmp)
 
     if all_dfs:
-        # concatena in sicurezza
+        # concatena in sicurezza e ordina
         try:
             df = pd.concat(all_dfs, ignore_index=True)
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True).dt.tz_localize(None)
             df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
         except Exception as e:
-            st.error(f"❌ Errore durante la concatenazione dei file: {e}")
+            st.error(f"❌ Errore durante la concatenazione/ordinamento dei file: {e}")
             st.stop()
 
         st.subheader("✅ Dati caricati correttamente")
-        st.write(df.head())
+        st.dataframe(df.head(20))
 
         # =========================
         # Filtro periodo
         # =========================
-        min_date, max_date = df["Date"].min(), df["Date"].max()
-        start, end = st.date_input(
+        min_date_ts, max_date_ts = df["Date"].min(), df["Date"].max()
+        # Streamlit preferisce oggetti date per il widget
+        min_date, max_date = min_date_ts.date(), max_date_ts.date()
+
+        start_date, end_date = st.date_input(
             "Seleziona l'intervallo di date",
             value=(min_date, max_date),
             min_value=min_date,
             max_value=max_date
         )
-        if isinstance(start, tuple):
-            start, end = start
+        # normalizza in Timestamp
+        start_ts = pd.to_datetime(start_date)
+        end_ts = pd.to_datetime(end_date)
 
-        mask = (df["Date"] >= pd.to_datetime(start)) & (df["Date"] <= pd.to_datetime(end))
-        filtered_df = df.loc[mask]
+        mask = (df["Date"] >= start_ts) & (df["Date"] <= end_ts)
+        filtered_df = df.loc[mask].copy()
 
         # =========================
         # Resample
@@ -181,27 +198,45 @@ if uploaded_files:
         # Statistiche
         # =========================
         st.subheader("📈 Statistiche principali")
-        for col in filtered_df.columns[1:]:
-            col1, col2, col3 = st.columns(3)
-            col1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
-            col2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
-            col3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+        numeric_cols = [c for c in filtered_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(filtered_df[c])]
+        if numeric_cols:
+            for col in numeric_cols:
+                c1, c2, c3 = st.columns(3)
+                c1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
+                c2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
+                c3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+        else:
+            st.warning("Nessuna colonna numerica disponibile dopo il filtro.")
 
         # =========================
         # Grafico
         # =========================
-        fig = px.line(filtered_df, x="Date", y=filtered_df.columns[1:], title="Andamento Google Trends", markers=True)
-        st.plotly_chart(fig, use_container_width=True)
+        if numeric_cols:
+            fig = px.line(filtered_df, x="Date", y=numeric_cols, title="Andamento Google Trends", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            fig = None
 
         # =========================
         # Download
         # =========================
-        st.download_button(
-            label="📥 Scarica grafico in PNG",
-            data=download_chart(fig),
-            file_name="trends_chart.png",
-            mime="image/png"
-        )
+        if fig is not None:
+            payload, mime, filename = download_chart(fig, fallback_df=filtered_df[["Date"] + numeric_cols])
+            st.download_button(
+                label="📥 Scarica grafico in PNG (se disponibile) / altrimenti CSV",
+                data=payload,
+                file_name=filename,
+                mime=mime
+            )
+            if mime != "image/png":
+                st.info("Per il download PNG serve il pacchetto `kaleido`. Aggiungilo in `requirements.txt`.")
+        else:
+            st.download_button(
+                label="⬇️ Scarica dati filtrati (CSV)",
+                data=filtered_df.to_csv(index=False).encode("utf-8"),
+                file_name="trends_filtrati.csv",
+                mime="text/csv"
+            )
     else:
         st.warning("⚠️ Nessun dato valido trovato nei file caricati.")
 else:
