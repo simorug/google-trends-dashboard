@@ -4,6 +4,7 @@ import plotly.express as px
 from io import BytesIO
 import io
 import os
+import re
 
 st.set_page_config(
     page_title="Google Trends Dashboard",
@@ -20,23 +21,22 @@ st.title("📊 Google Trends Dashboard")
 def load_trends_csv(file_like_or_path):
     """
     Legge CSV di Google Trends (multiTimeline.csv) anche se contiene righe iniziali
-    tipo 'Categoria: ...', 'Paese: ...', ecc. e intestazioni variabili ('Tempo',
-    'Giorno', 'Week', 'Date'). Restituisce un DataFrame con colonna 'Date' + serie numeriche.
+    tipo 'Categoria: ...', 'Paese: ...', ecc. e intestazioni variabili.
+    Restituisce un DataFrame con colonna 'Date' + serie numeriche.
     """
-    import re
 
-    # 1) Carica i bytes (sia da path, sia da UploadedFile di Streamlit)
+    # --- 1) Carica i bytes
     if isinstance(file_like_or_path, (str, os.PathLike)):
         with open(file_like_or_path, "rb") as f:
             raw_bytes = f.read()
     else:
         raw_bytes = file_like_or_path.read()
         try:
-            file_like_or_path.seek(0)  # ripristina se è un UploadedFile
+            file_like_or_path.seek(0)
         except Exception:
             pass
 
-    # 2) Decodifica robusta
+    # --- 2) Decodifica robusta
     try:
         text = raw_bytes.decode("utf-8-sig")
     except Exception:
@@ -44,19 +44,19 @@ def load_trends_csv(file_like_or_path):
 
     lines = text.splitlines()
 
-    # 3) Trova header
+    # --- 3) Trova header
     header_idx = 0
     header_found = False
     header_keys = ["tempo", "giorno", "settimana", "week", "date"]
 
-    for i, line in enumerate(lines[:100]):  # prime 100 righe
+    for i, line in enumerate(lines[:100]):
         low = line.lower()
         if ("," in line or ";" in line or "\t" in line) and any(k in low for k in header_keys):
             header_idx = i
             header_found = True
             break
 
-    # fallback: prima riga con una data tipo YYYY-MM-DD
+    # fallback: cerca una riga con YYYY-MM-DD
     if not header_found:
         date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
         for i, line in enumerate(lines[:100]):
@@ -67,7 +67,7 @@ def load_trends_csv(file_like_or_path):
 
     csv_text = "\n".join(lines[header_idx:])
 
-    # 4) Leggi il CSV
+    # --- 4) Leggi CSV
     try:
         df = pd.read_csv(io.StringIO(csv_text), sep=None, engine="python")
     except Exception:
@@ -76,11 +76,11 @@ def load_trends_csv(file_like_or_path):
     if df.shape[1] == 0:
         return pd.DataFrame()
 
-    # 5) Rinomina prima colonna in "Date"
+    # --- 5) Prima colonna → "Date"
     first_col = df.columns[0]
     df.rename(columns={first_col: "Date"}, inplace=True)
 
-    # 6) Pulisci nomi serie
+    # --- 6) Pulisci nomi colonne
     cleaned = []
     for c in df.columns:
         if c == "Date":
@@ -92,20 +92,20 @@ def load_trends_csv(file_like_or_path):
         cleaned.append(base)
     df.columns = cleaned
 
-    # 7) Drop colonna "isPartial" se presente
+    # --- 7) Drop colonna isPartial
     drop_cols = [c for c in df.columns if c.strip().lower() == "ispartial"]
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
 
-    # 8) Converte Date
+    # --- 8) Converte Date
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=False)
     df = df.dropna(subset=["Date"])
 
-    # 9) Converte altre colonne in numerico
+    # --- 9) Converte altre colonne in numerico
     for c in df.columns[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # 10) Tieni solo numeriche
+    # --- 10) Tieni solo numeriche
     numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
     if not numeric_cols:
         return pd.DataFrame()
@@ -114,11 +114,9 @@ def load_trends_csv(file_like_or_path):
 
 
 def download_chart(fig):
-    """Permette di scaricare il grafico in PNG"""
     buffer = BytesIO()
     fig.write_image(buffer, format="png")
     return buffer
-
 
 # =========================
 # Upload file
@@ -130,7 +128,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # 🔥 FIX: combina tutti i CSV caricati in un unico DataFrame
     all_dfs = []
     for f in uploaded_files:
         df_tmp = load_trends_csv(f)
@@ -154,7 +151,7 @@ if uploaded_files:
             min_value=min_date,
             max_value=max_date
         )
-        if isinstance(start, tuple):  # correzione per vecchie versioni streamlit
+        if isinstance(start, tuple):
             start, end = start
 
         mask = (df["Date"] >= pd.to_datetime(start)) & (df["Date"] <= pd.to_datetime(end))
