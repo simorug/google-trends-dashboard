@@ -81,8 +81,10 @@ def load_trends_csv(file_like_or_path):
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=False)
-    df = df.dropna(subset=["Date"])
+    # Conversione robusta della colonna Date
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])  # Rimuove eventuali righe senza data valida
 
     for c in df.columns[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -185,29 +187,30 @@ if uploaded_files:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("### 📥 Esporta")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button(
-                    label="📊 Scarica CSV",
-                    data=df_to_csv(filtered_df),
-                    file_name="trends_data.csv",
-                    mime="text/csv"
-                )
-            with col2:
-                st.download_button(
-                    label="📈 Scarica Excel",
-                    data=df_to_excel(filtered_df),
-                    file_name="trends_data.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            with col3:
-                st.download_button(
-                    label="🖼️ Scarica grafico PNG",
-                    data=download_chart(fig),
-                    file_name="trends_chart.png",
-                    mime="image/png"
-                )
+            st.markdown("### 📥 Esporta dati e grafico")
+            with st.container():
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.download_button(
+                        label="📊 Scarica CSV",
+                        data=df_to_csv(filtered_df),
+                        file_name="trends_data.csv",
+                        mime="text/csv"
+                    )
+                with col2:
+                    st.download_button(
+                        label="📈 Scarica Excel",
+                        data=df_to_excel(filtered_df),
+                        file_name="trends_data.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                with col3:
+                    st.download_button(
+                        label="🖼️ Scarica grafico PNG",
+                        data=download_chart(fig),
+                        file_name="trends_chart.png",
+                        mime="image/png"
+                    )
 
         with tab2:
             st.subheader("📈 Statistiche principali")
