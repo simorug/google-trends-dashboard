@@ -170,45 +170,56 @@ if uploaded_files:
         elif freq == "Mese":
             filtered_df = filtered_df.resample("M", on="Date").mean().reset_index()
 
-        st.subheader("📈 Statistiche principali")
-        for col in filtered_df.columns[1:]:
+        # =========================
+        # TABS UI
+        # =========================
+        tab1, tab2, tab3 = st.tabs(["📊 Grafici", "📈 Statistiche", "🗂️ Dati grezzi"])
+
+        with tab1:
+            fig = px.line(
+                filtered_df,
+                x="Date",
+                y=filtered_df.columns[1:],
+                title="📊 Andamento Google Trends",
+                markers=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("### 📥 Esporta")
             col1, col2, col3 = st.columns(3)
-            col1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
-            col2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
-            col3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+            with col1:
+                st.download_button(
+                    label="📊 Scarica CSV",
+                    data=df_to_csv(filtered_df),
+                    file_name="trends_data.csv",
+                    mime="text/csv"
+                )
+            with col2:
+                st.download_button(
+                    label="📈 Scarica Excel",
+                    data=df_to_excel(filtered_df),
+                    file_name="trends_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col3:
+                st.download_button(
+                    label="🖼️ Scarica grafico PNG",
+                    data=download_chart(fig),
+                    file_name="trends_chart.png",
+                    mime="image/png"
+                )
 
-        fig = px.line(
-            filtered_df,
-            x="Date",
-            y=filtered_df.columns[1:],
-            title="📊 Andamento Google Trends",
-            markers=True
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with tab2:
+            st.subheader("📈 Statistiche principali")
+            for col in filtered_df.columns[1:]:
+                col1, col2, col3 = st.columns(3)
+                col1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
+                col2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
+                col3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
 
-        st.markdown("### 📥 Esporta i dati")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.download_button(
-                label="📊 Scarica CSV",
-                data=df_to_csv(filtered_df),
-                file_name="trends_data.csv",
-                mime="text/csv"
-            )
-        with col2:
-            st.download_button(
-                label="📈 Scarica Excel",
-                data=df_to_excel(filtered_df),
-                file_name="trends_data.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        with col3:
-            st.download_button(
-                label="🖼️ Scarica grafico PNG",
-                data=download_chart(fig),
-                file_name="trends_chart.png",
-                mime="image/png"
-            )
+        with tab3:
+            st.subheader("🗂️ Dati grezzi")
+            st.dataframe(filtered_df, use_container_width=True)
 
     else:
         st.warning("⚠️ Nessun dato valido trovato nei file caricati.")
