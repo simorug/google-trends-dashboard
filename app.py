@@ -15,8 +15,6 @@ st.set_page_config(
 st.title("📊 Google Trends Dashboard")
 
 # =========================
-# Funzioni di supporto
-# =========================
 @st.cache_data
 def load_trends_file(file_like_or_path):
     # 🔹 Se è un path, estraiamo estensione
@@ -31,11 +29,11 @@ def load_trends_file(file_like_or_path):
         if ext in [".xlsx", ".xls"]:
             df = pd.read_excel(file_like_or_path)
         elif ext in [".tsv", ".txt"]:
-            df = pd.read_csv(file_like_or_path, sep="\t")
+            df = pd.read_csv(file_like_or_path, sep="\t", skiprows=1)
         else:  # default -> CSV
-            df = pd.read_csv(file_like_or_path)
+            df = pd.read_csv(file_like_or_path, skiprows=1)  # 🔹 Salta riga iniziale di Google Trends
     except Exception as e:
-        st.error(f"❌ Errore durante la lettura del file {file_like_or_path.name}: {e}")
+        st.error(f"❌ Errore durante la lettura del file {getattr(file_like_or_path, 'name', file_like_or_path)}: {e}")
         return pd.DataFrame()
 
     if df.shape[1] == 0:
@@ -76,6 +74,7 @@ def load_trends_file(file_like_or_path):
         return pd.DataFrame()
 
     return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
+
 
 
 def download_chart(fig):
