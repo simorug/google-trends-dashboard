@@ -18,54 +18,34 @@ st.title("📊 Google Trends Dashboard")
 # Funzioni di supporto
 # =========================
 @st.cache_data
-def load_trends_csv(file_like_or_path):
+def load_trends_file(file_like_or_path):
+    # 🔹 Se è un path, estraiamo estensione
     if isinstance(file_like_or_path, (str, os.PathLike)):
-        with open(file_like_or_path, "rb") as f:
-            raw_bytes = f.read()
+        ext = os.path.splitext(file_like_or_path)[1].lower()
     else:
-        raw_bytes = file_like_or_path.read()
-        try:
-            file_like_or_path.seek(0)
-        except Exception:
-            pass
+        ext = os.path.splitext(file_like_or_path.name)[1].lower()
+
+    df = None
 
     try:
-        text = raw_bytes.decode("utf-8-sig")
-    except Exception:
-        text = raw_bytes.decode("utf-8", errors="ignore")
-
-    lines = text.splitlines()
-    header_idx = 0
-    header_found = False
-    header_keys = ["tempo", "giorno", "settimana", "week", "date"]
-
-    for i, line in enumerate(lines[:100]):
-        low = line.lower()
-        if ("," in line or ";" in line or "\t" in line) and any(k in low for k in header_keys):
-            header_idx = i
-            header_found = True
-            break
-
-    if not header_found:
-        date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
-        for i, line in enumerate(lines[:100]):
-            if date_re.search(line) and ("," in line or ";" in line or "\t" in line):
-                header_idx = max(0, i - 1)
-                header_found = True
-                break
-
-    csv_text = "\n".join(lines[header_idx:])
-    try:
-        df = pd.read_csv(io.StringIO(csv_text), sep=None, engine="python")
-    except Exception:
-        df = pd.read_csv(io.StringIO(csv_text))
+        if ext in [".xlsx", ".xls"]:
+            df = pd.read_excel(file_like_or_path)
+        elif ext in [".tsv", ".txt"]:
+            df = pd.read_csv(file_like_or_path, sep="\t")
+        else:  # default -> CSV
+            df = pd.read_csv(file_like_or_path)
+    except Exception as e:
+        st.error(f"❌ Errore durante la lettura del file {file_like_or_path.name}: {e}")
+        return pd.DataFrame()
 
     if df.shape[1] == 0:
         return pd.DataFrame()
 
+    # 🔹 Uniformiamo colonna Date
     first_col = df.columns[0]
     df.rename(columns={first_col: "Date"}, inplace=True)
 
+    # Pulizia colonne
     cleaned = []
     for c in df.columns:
         if c == "Date":
@@ -77,15 +57,17 @@ def load_trends_csv(file_like_or_path):
         cleaned.append(base)
     df.columns = cleaned
 
+    # Rimuovi colonna isPartial se presente
     drop_cols = [c for c in df.columns if c.strip().lower() == "ispartial"]
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
 
-    # ✅ Conversione robusta della colonna Date
+    # Conversione Date
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.dropna(subset=["Date"])  # Rimuove eventuali righe senza data valida
+        df = df.dropna(subset=["Date"])
 
+    # Conversione numerica
     for c in df.columns[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -123,15 +105,15 @@ def df_to_excel(df):
 # Upload file
 # =========================
 uploaded_files = st.sidebar.file_uploader(
-    "📂 Carica uno o più file CSV da Google Trends",
-    type=["csv"],
+    "📂 Carica uno o più file di Google Trends",
+    type=["csv", "xlsx", "xls", "tsv", "txt"],
     accept_multiple_files=True
 )
 
 if uploaded_files:
     all_dfs = []
     for f in uploaded_files:
-        df_tmp = load_trends_csv(f)
+        df_tmp = load_trends_file(f)
         if not df_tmp.empty:
             df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce")
             df_tmp = df_tmp.dropna(subset=["Date"])
