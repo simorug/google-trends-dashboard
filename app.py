@@ -32,6 +32,12 @@ def load_trends_file(file_like_or_path):
             df = pd.read_csv(file_like_or_path, sep="\t", skiprows=1)
         else:  # default -> CSV
             df = pd.read_csv(file_like_or_path, skiprows=1)  # 🔹 Salta riga iniziale di Google Trends
+            # 🔹 Rimuovi eventuali righe iniziali dei metadati di Google Trends
+for i in range(min(10, len(df))):
+    if pd.to_datetime(str(df.iloc[i, 0]), errors="coerce") is not pd.NaT:
+        df = df.iloc[i:]  # mantieni solo da qui in poi
+        break
+
     except Exception as e:
         st.error(f"❌ Errore durante la lettura del file {getattr(file_like_or_path, 'name', file_like_or_path)}: {e}")
         return pd.DataFrame()
