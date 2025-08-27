@@ -1,6 +1,6 @@
 # 📊 Google Trends Dashboard
 
-**Live demo:** https://TUO-LINK.streamlit.app/  <!-- Sostituisci con il tuo link live, se disponibile -->
+**Live demo:** https://app-trend-dashboard.streamlit.app/  <!-- Sostituisci con il tuo link live, se disponibile -->
 
 Dashboard Streamlit per visualizzare e analizzare esportazioni di **Google Trends**.  
 Ideale come demo portfolio per recruiter / clienti.
