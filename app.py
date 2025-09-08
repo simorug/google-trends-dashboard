@@ -4,7 +4,6 @@ import plotly.express as px
 from io import BytesIO
 import io
 import os
-import re
 
 st.set_page_config(
     page_title="Google Trends Dashboard",
@@ -18,31 +17,19 @@ st.title("📊 Google Trends Dashboard")
 def load_trends_file(file_like_or_path):
     if isinstance(file_like_or_path, (str, os.PathLike)):
         ext = os.path.splitext(file_like_or_path)[1].lower()
-        with open(file_like_or_path, "r", encoding="utf-8-sig", errors="ignore") as f:
-            raw_text = f.read()
     else:
         ext = os.path.splitext(file_like_or_path.name)[1].lower()
-        raw_text = file_like_or_path.read().decode("utf-8-sig", errors="ignore")
-        file_like_or_path.seek(0)
 
-    lines = raw_text.splitlines()
-    header_idx = 0
-    date_pattern = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-    for i, line in enumerate(lines[:100]):
-        low = line.lower()
-        if "date" in low or date_pattern.search(line):
-            header_idx = i
-            break
-
-    clean_text = "\n".join(lines[header_idx:])
+    df = None
     try:
         if ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(io.BytesIO(raw_text.encode("utf-8")))
+            df = pd.read_excel(file_like_or_path)
+        elif ext in [".tsv", ".txt"]:
+            df = pd.read_csv(file_like_or_path, sep="\t")
         else:
-            df = pd.read_csv(io.StringIO(clean_text))
+            df = pd.read_csv(file_like_or_path)
     except Exception as e:
-        st.error(f"Errore durante la lettura del file {file_like_or_path}: {e}")
+        st.error(f"❌ Errore durante la lettura del file {file_like_or_path}: {e}")
         return pd.DataFrame()
 
     if df.shape[1] == 0:
@@ -137,9 +124,12 @@ if uploaded_files:
             if isinstance(start, tuple):
                 start, end = start
 
+            start = pd.to_datetime(start, errors="coerce")
+            end = pd.to_datetime(end, errors="coerce")
+
             freq = st.selectbox("⏱️ Raggruppa dati per", ["Nessuno", "Giorno", "Settimana", "Mese"])
 
-        mask = (df["Date"] >= pd.to_datetime(start)) & (df["Date"] <= pd.to_datetime(end))
+        mask = (df["Date"] >= start) & (df["Date"] <= end)
         filtered_df = df.loc[mask]
 
         if freq == "Giorno":
@@ -162,37 +152,36 @@ if uploaded_files:
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("### 📥 Esporta dati e grafico")
-            with st.container():
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.download_button(
-                        label="📊 Scarica CSV",
-                        data=df_to_csv(filtered_df),
-                        file_name="trends_data.csv",
-                        mime="text/csv"
-                    )
-                with col2:
-                    st.download_button(
-                        label="📈 Scarica Excel",
-                        data=df_to_excel(filtered_df),
-                        file_name="trends_data.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                with col3:
-                    st.download_button(
-                        label="🖼️ Scarica grafico PNG",
-                        data=download_chart(fig),
-                        file_name="trends_chart.png",
-                        mime="image/png"
-                    )
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.download_button(
+                    label="📊 Scarica CSV",
+                    data=df_to_csv(filtered_df),
+                    file_name="trends_data.csv",
+                    mime="text/csv"
+                )
+            with col2:
+                st.download_button(
+                    label="📈 Scarica Excel",
+                    data=df_to_excel(filtered_df),
+                    file_name="trends_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col3:
+                st.download_button(
+                    label="🖼️ Scarica grafico PNG",
+                    data=download_chart(fig),
+                    file_name="trends_chart.png",
+                    mime="image/png"
+                )
 
         with tab2:
             st.subheader("📈 Statistiche principali")
             for col in filtered_df.columns[1:]:
-                col1, col2, col3 = st.columns(3)
-                col1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
-                col2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
-                col3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+                c1, c2, c3 = st.columns(3)
+                c1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
+                c2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
+                c3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
 
         with tab3:
             st.subheader("🗂️ Dati grezzi")
@@ -201,4 +190,4 @@ if uploaded_files:
     else:
         st.warning("⚠️ Nessun dato valido trovato nei file caricati.")
 else:
-    st.info("⬅️ Carica un file CSV di Google Trends per iniziare.")
+    st.info("⬅️ Carica un file di Google Trends per iniziare.")
