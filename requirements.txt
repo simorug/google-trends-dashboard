@@ -4,4 +4,4 @@ plotly>=5.15.0
 kaleido>=0.2.1
 xlsxwriter>=3.0.0
 openpyxl>=3.1.0
-pytrends>=4.11.0
+pytrends>=4.9.2
