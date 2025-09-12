@@ -5,6 +5,7 @@ from io import BytesIO
 import io
 import os
 import re
+from pytrends.request import TrendReq
 
 st.set_page_config(page_title="Google Trends Dashboard", page_icon="📈", layout="wide")
 st.title("📊 Google Trends Dashboard")
@@ -35,7 +36,7 @@ def load_trends_file(file_like_or_path):
             lines = text.splitlines()
             header_idx = 0
             header_found = False
-            header_keys = ["tempo", "giorno", "settimana", "week", "date", "time", "tempo (italia)"]
+            header_keys = ["tempo", "giorno", "settimana", "week", "date", "time"]
             for i, line in enumerate(lines[:200]):
                 low = line.lower()
                 if ("," in line or ";" in line or "\t" in line) and any(k in low for k in header_keys):
@@ -87,6 +88,36 @@ def load_trends_file(file_like_or_path):
         return pd.DataFrame()
     return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
 
+@st.cache_data(ttl=3600)
+def fetch_pytrends(keywords: list[str], timeframe: str = "today 12-m", geo: str = "") -> pd.DataFrame:
+    if not keywords:
+        return pd.DataFrame()
+    kw_list = [k.strip() for k in keywords if k.strip()]
+    if not kw_list:
+        return pd.DataFrame()
+    try:
+        pytrends = TrendReq(hl='it-IT', tz=0)
+        pytrends.build_payload(kw_list[:5], cat=0, timeframe=timeframe, geo=geo or '')
+        df = pytrends.interest_over_time()
+        if df.empty:
+            return pd.DataFrame()
+        if 'isPartial' in df.columns:
+            df = df.drop(columns=['isPartial'])
+        df = df.reset_index().rename(columns={'date': 'Date'})
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
+        try:
+            df["Date"] = df["Date"].dt.tz_convert(None)
+        except Exception:
+            df["Date"] = df["Date"].dt.tz_localize(None)
+        for c in df.columns[1:]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        numeric_cols = [c for c in df.columns[1:] if pd.api.types.is_numeric_dtype(df[c])]
+        if not numeric_cols:
+            return pd.DataFrame()
+        return df[["Date"] + numeric_cols].sort_values("Date").reset_index(drop=True)
+    except Exception as e:
+        return pd.DataFrame()
+
 def df_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
 
@@ -114,83 +145,100 @@ def download_chart_bytes(fig, fallback_df=None):
             return df_to_csv_bytes(fallback_df), "text/csv"
         return b"", "application/octet-stream"
 
-uploaded_files = st.sidebar.file_uploader("📂 Carica file (CSV/TSV/XLSX) Google Trends", type=["csv","tsv","txt","xlsx","xls"], accept_multiple_files=True)
+st.sidebar.header("Sorgente dati")
+use_live = st.sidebar.checkbox("Usa Google Trends live (pytrends)", value=False)
+uploaded_files = st.sidebar.file_uploader("📂 Carica file (CSV/TSV/XLSX) (opzionale)", type=["csv","tsv","txt","xlsx","xls"], accept_multiple_files=True)
 
+live_df = pd.DataFrame()
+if use_live:
+    kw_input = st.sidebar.text_input("Keyword (separa con virgola)", "AI, ChatGPT")
+    timeframe = st.sidebar.selectbox("Periodo (pytrends)", ["today 7-d","today 1-m","today 3-m","today 12-m","today 5-y"], index=3)
+    geo = st.sidebar.text_input("Geo (es. IT, US) - lascia vuoto per Worldwide", value="")
+    if st.sidebar.button("📡 Fetch live da Google Trends"):
+        with st.spinner("Sto chiedendo dati a Google Trends..."):
+            live_df = fetch_pytrends([k.strip() for k in kw_input.split(",")], timeframe=timeframe, geo=geo.strip())
+            if live_df.empty:
+                st.sidebar.error("Nessun dato ricevuto da pytrends (rate-limit o formato). Usa l'upload CSV come fallback.")
+            else:
+                st.sidebar.success(f"Dati live ricevuti: {', '.join([c for c in live_df.columns if c!='Date'])}")
+
+all_dfs = []
 if uploaded_files:
-    all_dfs = []
     for f in uploaded_files:
         df_tmp = load_trends_file(f)
         if not df_tmp.empty:
             df_tmp["Date"] = pd.to_datetime(df_tmp["Date"], errors="coerce")
             df_tmp = df_tmp.dropna(subset=["Date"])
             all_dfs.append(df_tmp)
-    if all_dfs:
-        try:
-            df = pd.concat(all_dfs, ignore_index=True, sort=False)
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
-        except Exception as e:
-            st.error("Errore durante concatenazione: " + str(e))
-            st.stop()
-        st.success("✅ Dati caricati")
-        min_ts, max_ts = df["Date"].min(), df["Date"].max()
-        min_date, max_date = min_ts.date(), max_ts.date()
-        with st.sidebar:
-            st.markdown("---")
-            date_range = st.date_input("📅 Intervallo", value=(min_date, max_date), min_value=min_date, max_value=max_date)
-            freq = st.selectbox("⏱ Raggruppa per", ["Nessuno","Giorno","Settimana","Mese"])
-        if isinstance(date_range, tuple):
-            start_date, end_date = date_range
-        else:
-            start_date, end_date = date_range, date_range
-        start_ts = pd.to_datetime(start_date)
-        end_ts = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        mask = (df["Date"] >= start_ts) & (df["Date"] <= end_ts)
-        filtered_df = df.loc[mask].copy()
-        if freq == "Giorno":
-            filtered_df = filtered_df.resample("D", on="Date").mean(numeric_only=True).reset_index()
-        elif freq == "Settimana":
-            filtered_df = filtered_df.resample("W", on="Date").mean(numeric_only=True).reset_index()
-        elif freq == "Mese":
-            filtered_df = filtered_df.resample("M", on="Date").mean(numeric_only=True).reset_index()
-        tab1, tab2, tab3 = st.tabs(["📊 Grafici","📈 Statistiche","🗂 Dati grezzi"])
-        with tab1:
-            numeric_cols = [c for c in filtered_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(filtered_df[c])]
-            if numeric_cols:
-                chart_type = st.selectbox("Tipo grafico", ["Linee","Barre","Area","Scatter"])
-                if chart_type == "Linee":
-                    fig = px.line(filtered_df, x="Date", y=numeric_cols, title="Andamento", markers=True)
-                elif chart_type == "Barre":
-                    fig = px.bar(filtered_df, x="Date", y=numeric_cols, title="Andamento")
-                elif chart_type == "Area":
-                    fig = px.area(filtered_df, x="Date", y=numeric_cols, title="Andamento")
-                else:
-                    fig = px.scatter(filtered_df, x="Date", y=numeric_cols, title="Andamento")
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Nessuna colonna numerica.")
-                fig = None
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Scarica CSV", data=df_to_csv_bytes(filtered_df), file_name="trends_data.csv", mime="text/csv")
-            with col2:
-                st.download_button("📈 Scarica Excel", data=df_to_excel_bytes(filtered_df), file_name="trends_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            with col3:
-                if fig is not None:
-                    payload, mime = download_chart_bytes(fig, fallback_df=filtered_df)
-                    fname = "trends_chart.png" if mime == "image/png" else "trends_data.csv"
-                    st.download_button("🖼️ Scarica grafico (PNG o CSV)", data=payload, file_name=fname, mime=mime)
-        with tab2:
-            st.subheader("Statistiche principali")
-            for col in filtered_df.columns[1:]:
-                c1, c2, c3 = st.columns(3)
-                c1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
-                c2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
-                c3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
-        with tab3:
-            st.subheader("Dati")
-            st.dataframe(filtered_df, use_container_width=True)
+
+if not live_df.empty:
+    all_dfs.append(live_df)
+
+if all_dfs:
+    try:
+        df = pd.concat(all_dfs, ignore_index=True, sort=False)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    except Exception as e:
+        st.error("Errore durante concatenazione: " + str(e))
+        st.stop()
+    st.success("✅ Dati pronti")
+    min_ts, max_ts = df["Date"].min(), df["Date"].max()
+    min_date, max_date = min_ts.date(), max_ts.date()
+    with st.sidebar:
+        st.markdown("---")
+        date_range = st.date_input("📅 Intervallo", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+        freq = st.selectbox("⏱ Raggruppa per", ["Nessuno","Giorno","Settimana","Mese"])
+    if isinstance(date_range, tuple):
+        start_date, end_date = date_range
     else:
-        st.warning("⚠️ Nessun dato valido trovato nei file caricati.")
+        start_date, end_date = date_range, date_range
+    start_ts = pd.to_datetime(start_date)
+    end_ts = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    mask = (df["Date"] >= start_ts) & (df["Date"] <= end_ts)
+    filtered_df = df.loc[mask].copy()
+    if freq == "Giorno":
+        filtered_df = filtered_df.resample("D", on="Date").mean(numeric_only=True).reset_index()
+    elif freq == "Settimana":
+        filtered_df = filtered_df.resample("W", on="Date").mean(numeric_only=True).reset_index()
+    elif freq == "Mese":
+        filtered_df = filtered_df.resample("M", on="Date").mean(numeric_only=True).reset_index()
+    tab1, tab2, tab3 = st.tabs(["📊 Grafici","📈 Statistiche","🗂 Dati grezzi"])
+    with tab1:
+        numeric_cols = [c for c in filtered_df.columns if c != "Date" and pd.api.types.is_numeric_dtype(filtered_df[c])]
+        if numeric_cols:
+            chart_type = st.selectbox("Tipo grafico", ["Linee","Barre","Area","Scatter"])
+            if chart_type == "Linee":
+                fig = px.line(filtered_df, x="Date", y=numeric_cols, title="Andamento", markers=True)
+            elif chart_type == "Barre":
+                fig = px.bar(filtered_df, x="Date", y=numeric_cols, title="Andamento")
+            elif chart_type == "Area":
+                fig = px.area(filtered_df, x="Date", y=numeric_cols, title="Andamento")
+            else:
+                fig = px.scatter(filtered_df, x="Date", y=numeric_cols, title="Andamento")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Nessuna colonna numerica.")
+            fig = None
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button("📊 Scarica CSV", data=df_to_csv_bytes(filtered_df), file_name="trends_data.csv", mime="text/csv")
+        with col2:
+            st.download_button("📈 Scarica Excel", data=df_to_excel_bytes(filtered_df), file_name="trends_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with col3:
+            if fig is not None:
+                payload, mime = download_chart_bytes(fig, fallback_df=filtered_df)
+                fname = "trends_chart.png" if mime == "image/png" else "trends_data.csv"
+                st.download_button("🖼️ Scarica grafico (PNG o CSV)", data=payload, file_name=fname, mime=mime)
+    with tab2:
+        st.subheader("Statistiche principali")
+        for col in filtered_df.columns[1:]:
+            c1, c2, c3 = st.columns(3)
+            c1.metric(f"Media {col}", f"{filtered_df[col].mean():.2f}")
+            c2.metric(f"Max {col}", f"{filtered_df[col].max():.0f}")
+            c3.metric(f"Min {col}", f"{filtered_df[col].min():.0f}")
+    with tab3:
+        st.subheader("Dati")
+        st.dataframe(filtered_df, use_container_width=True)
 else:
-    st.info("⬅️ Carica un file di Google Trends per iniziare")
+    st.info("⬅️ Carica file / usa Google Trends live per iniziare")
